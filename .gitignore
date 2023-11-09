@@ -2,4 +2,4 @@
 /main.exe
 
 # cargo-dist
-/distrib
+/target
