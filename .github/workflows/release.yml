@@ -8,8 +8,8 @@
 # * uploads those artifacts to temporary workflow zip
 # * on success, uploads the artifacts to a Github Release™
 #
-# Note that a Github Release™ with this tag is assumed to exist as a draft
-# with the appropriate title/body, and will be undrafted for you.
+# Note that the Github Release™ will be created with a generated
+# title/body based on your changelogs.
 name: Release
 
 permissions:
@@ -129,84 +129,15 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
-  # Build and package all the platform-agnostic(ish) things
-  upload-global-artifacts:
-    needs: [plan, upload-local-artifacts]
-    runs-on: "ubuntu-20.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install cargo-dist
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.4.2/cargo-dist-installer.sh | sh"
-      # Get all the local artifacts for the global tasks to use (for e.g. checksums)
-      - name: Fetch local artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: artifacts
-          path: target/distrib/
-      - id: cargo-dist
-        shell: bash
-        run: |
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
-          echo "cargo dist ran successfully"
-
-          # Parse out what we just built and upload it to the Github Release™
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".artifacts[]?.path | select( . != null )" dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts
-          path: ${{ steps.cargo-dist.outputs.paths }}
-
   should-publish:
     needs:
       - plan
       - upload-local-artifacts
-      - upload-global-artifacts
     if: ${{ needs.plan.outputs.publishing == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: print tag
         run: echo "ok we're publishing!"
-
-  publish-homebrew-formula:
-    needs: [plan, should-publish]
-    runs-on: "ubuntu-20.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PLAN: ${{ needs.plan.outputs.val }}
-      GITHUB_USER: "axo bot"
-      GITHUB_EMAIL: "admin+bot@axo.dev"
-    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: "mistydemeo/homebrew-cargodisttest"
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      # So we have access to the formula
-      - name: Fetch local artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: artifacts
-          path: Formula/
-      - name: Commit formula files
-        run: |
-          git config --global user.name "${GITHUB_USER}"
-          git config --global user.email "${GITHUB_EMAIL}"
-
-          for release in $(echo "$PLAN" | jq --compact-output '.releases[]'); do
-            name=$(echo "$release" | jq .app_name --raw-output)
-            version=$(echo "$release" | jq .app_version --raw-output)
-
-            git add Formula/${name}.rb
-            git commit -m "${name} ${version}"
-          done
-          git push
 
   # Create a Github Release with all the results once everything is done
   publish-release:
@@ -231,9 +162,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ needs.plan.outputs.tag }}
-          allowUpdates: true
-          updateOnlyUnreleased: true
-          omitBodyDuringUpdate: true
-          omitNameDuringUpdate: true
+          name: ${{ fromJson(needs.plan.outputs.val).announcement_title }}
+          body: ${{ fromJson(needs.plan.outputs.val).announcement_github_body }}
           prerelease: ${{ fromJson(needs.plan.outputs.val).announcement_is_prerelease }}
           artifacts: "artifacts/*"
